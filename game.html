@@ -1,0 +1,1388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<link href="styles.css" rel="stylesheet" type="text/css">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes">
+<title>Digital Mirror - Online Safety Journey</title>
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script>
+// Background Music
+const BGM = {
+    context: null,
+    gainNode: null,
+    isPlaying: false,
+    oscillators: [],
+    initialized: false,
+    
+    init() {
+        if (!this.initialized) {
+            try {
+                this.context = new (window.AudioContext || window.webkitAudioContext)();
+                this.gainNode = this.context.createGain();
+                this.gainNode.gain.value = 0.06; // REDUCED volume (was 0.08)
+                this.gainNode.connect(this.context.destination);
+                this.initialized = true;
+            } catch(e) {
+                console.log("BGM not available");
+            }
+        }
+    },
+    
+    start() {
+        if (this.isPlaying) return;
+        this.isPlaying = true;
+        this.playAmbientLoop();
+    },
+    
+    stop() {
+        this.isPlaying = false;
+        this.oscillators.forEach(osc => {
+            try { osc.stop(); } catch(e) {}
+        });
+        this.oscillators = [];
+    },
+    
+    playAmbientLoop() {
+        if (!this.initialized) this.init();
+        if (!this.isPlaying || !this.context) return;
+        
+        const notes = [261.63, 329.63, 392.00, 493.88];
+        const playNote = (freq, delay, duration) => {
+            setTimeout(() => {
+                if (!this.isPlaying || !this.context) return;
+                try {
+                    const osc = this.context.createOscillator();
+                    osc.connect(this.gainNode);
+                    osc.frequency.value = freq;
+                    osc.type = 'sine';
+                    osc.start(this.context.currentTime);
+                    osc.stop(this.context.currentTime + duration);
+                    this.oscillators.push(osc);
+                } catch(e) {
+                    // Ignore audio errors
+                }
+            }, delay);
+        };
+        
+        playNote(notes[0], 0, 2);
+        playNote(notes[2], 1000, 2);
+        playNote(notes[1], 2000, 2);
+        playNote(notes[3], 3000, 2);
+        
+        setTimeout(() => this.playAmbientLoop(), 5000);
+    }
+};
+
+// Sound Effects
+const AudioManager = {
+    context: null,
+    initialized: false,
+    init() {
+        if (!this.initialized) {
+            try {
+                this.context = new (window.AudioContext || window.webkitAudioContext)();
+                this.initialized = true;
+            } catch(e) {
+                console.log("Audio not available");
+            }
+        }
+    },
+    playCorrect() {
+        this.playTone(800, 0.1);
+        setTimeout(() => this.playTone(1000, 0.1), 100);
+        setTimeout(() => this.playTone(1200, 0.15), 200);
+    },
+    playWrong() {
+        this.playTone(300, 0.15, 'sawtooth');
+        setTimeout(() => this.playTone(200, 0.2, 'sawtooth'), 100);
+    },
+    playClick() {
+        this.playTone(600, 0.05);
+    },
+    playSafe() {
+        this.playTone(900, 0.1);
+        setTimeout(() => this.playTone(1100, 0.15), 80);
+    },
+    playRisky() {
+        this.playTone(250, 0.2, 'square');
+        setTimeout(() => this.playTone(200, 0.15, 'square'), 150);
+    },
+    playSuccess() {
+        this.playTone(600, 0.08);
+        setTimeout(() => this.playTone(800, 0.08), 80);
+        setTimeout(() => this.playTone(1000, 0.08), 160);
+        setTimeout(() => this.playTone(1200, 0.2), 240);
+    },
+    playGameOver() {
+        this.playTone(500, 0.15);
+        setTimeout(() => this.playTone(400, 0.15), 120);
+        setTimeout(() => this.playTone(300, 0.25), 240);
+    },
+    playTone(frequency, duration, type = 'sine') {
+        if (!this.initialized) this.init();
+        if (!this.context) return;
+        
+        try {
+            const oscillator = this.context.createOscillator();
+            const gainNode = this.context.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(this.context.destination);
+            oscillator.frequency.value = frequency;
+            oscillator.type = type;
+            gainNode.gain.setValueAtTime(0.3, this.context.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, this.context.currentTime + duration);
+            oscillator.start(this.context.currentTime);
+            oscillator.stop(this.context.currentTime + duration);
+        } catch(e) {
+            // Ignore audio errors
+        }
+    }
+};
+
+// Achievements
+function saveAchievement(badge) {
+    try {
+        let saved = JSON.parse(localStorage.getItem('digitalMirrorAchievements') || '[]');
+        if (!saved.includes(badge)) {
+            saved.push(badge);
+            localStorage.setItem('digitalMirrorAchievements', JSON.stringify(saved));
+        }
+    } catch(e) {}
+}
+
+function loadAchievements() {
+    try {
+        let saved = JSON.parse(localStorage.getItem('digitalMirrorAchievements') || '[]');
+        if (saved.length > 0) {
+            $('#previous-achievements').show();
+            saved.forEach(badge => {
+                $('#achievement-list').append('<div class="past-badge">' + badge + '</div>');
+            });
+        }
+    } catch(e) {}
+}
+
+// Game State
+let stage = "welcome";
+let currentScene = 0;
+let score = 0;
+let safeChoices = 0;
+let riskyChoices = 0;
+let trustLevel = 100;
+let currentStreak = 0;
+let bestStreak = 0;
+let visitedScenes = [];
+let totalDecisions = 0;
+let minigamesCompleted = {click: false, sequence: false, socialfeed: false, groupchat: false, dodge: false};
+
+// Scene Data - same as before
+const sceneGraph = {
+    1: {
+        id: 1,
+        title: "A Suspicious Friend Request",
+        text: "You're scrolling through social media when you receive a friend request from 'Alex_Chen2024'. The profile has professional-looking photos that seem almost TOO perfect, claims to have mutual friends, and shares your exact interests. With AI tools making it easier than ever to create convincing fake profiles, something feels off.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "Hey there! 😊", delay: 1000},
+            {from: "alex", text: "I saw we have a bunch of mutual friends!", delay: 2200},
+            {from: "alex", text: "I love your photography posts! Are you a professional?", delay: 3800}
+        ],
+        hasMinigame: true,
+        minigame: {
+            type: "click",
+            title: "⚠️ Spot the AI-Enhanced Red Flags!",
+            instructions: "AI makes fake profiles MORE convincing. Click on ALL the warning signs - including AI-generated content:",
+            items: [
+                {icon: "🆕", label: "Account created 2 weeks ago", isRedFlag: true},
+                {icon: "🤖", label: "Photos look AI-generated (too perfect/unrealistic)", isRedFlag: true},
+                {icon: "👥", label: "Mutual friends don't interact with their posts", isRedFlag: true},
+                {icon: "🎨", label: "Shares your exact interests (scraped from your profile)", isRedFlag: true},
+                {icon: "📝", label: "Generic AI-written bio with no personal details", isRedFlag: true},
+                {icon: "🌍", label: "Lists same city as you", isRedFlag: false},
+                {icon: "😊", label: "Friendly profile picture", isRedFlag: false},
+                {icon: "📱", label: "Active on social media", isRedFlag: false}
+            ],
+            requiredCorrect: 5,
+            bonusPoints: 15
+        },
+        choices: [
+            {text: "Accept the request and reply enthusiastically", points: -5, outcome: "risky", nextScene: 2, chatResponse: "Thanks! I love photography! What kind of stuff do you shoot?"},
+            {text: "Politely check their profile more carefully first", points: 10, outcome: "safe", nextScene: 2, chatResponse: "Thanks for reaching out! Let me check out your page first."},
+            {text: "Send them a message asking how they found you", points: 5, outcome: "neutral", nextScene: 2, chatResponse: "Hi! How did you find my profile?"},
+            {text: "Ignore the request completely", points: 3, outcome: "neutral", nextScene: 2, chatResponse: null}
+        ],
+        outcomes: {
+            risky: {title: "⚠️ AI Makes Catfishing Easier!", text: "AI tools can generate realistic photos, write convincing bios, and scrape your interests in seconds. Scammers use AI to create fake profiles that are harder to detect than ever before."},
+            safe: {title: "✅ Smart Move!", text: "AI-generated content is getting more sophisticated. Always verify unknown accounts - scammers now use AI to create convincing fake profiles with realistic photos, personalized messages, and scraped information about you."},
+            neutral: {title: "🤔 Cautious Approach", text: "Being cautious is good. AI makes it easier for predators to create convincing fake identities. Learning to spot AI-generated content helps you stay safe."}
+        }
+    },
+    
+    2: {
+        id: 2,
+        title: "The Memory Test",
+        text: "Before continuing with Alex, let's test your memory of online safety principles. Remembering these patterns will help you recognize manipulation tactics when they appear.",
+        hasChat: false,
+        hasMinigame: true,
+        minigame: {
+            type: "sequence",
+            title: "🧠 Safety Pattern Recognition",
+            instructions: "Watch the sequence of safety symbols light up, then repeat the pattern exactly. Complete 3 rounds to prove you're paying attention to warning signs!",
+            roundsRequired: 3,
+            bonusPoints: 20,
+            showBeforeGame: true  // Show choice before minigame
+        },
+        choices: [
+            {text: "Start the memory challenge", points: 0, outcome: "safe", nextScene: 11, chatResponse: null}
+        ],
+        outcomes: {
+            safe: {title: "🎯 Memory Strengthened", text: "Strong pattern recognition helps you identify when someone's behavior doesn't add up. Trust these mental warning signals!"}
+        }
+    },
+    
+    3: {
+        id: 3,
+        title: "AI-Powered Personalization Attack",
+        text: "After analyzing your public posts with AI, Alex begins asking targeted personal questions. They know your school schedule, your hobbies, even your daily routine - all scraped and analyzed by AI tools. This personalized approach makes the manipulation feel more trustworthy.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "So where do you go to school?", delay: 900},
+            {from: "alex", text: "What time do you usually get home?", delay: 2100},
+            {from: "alex", text: "Are your parents around a lot? 😊", delay: 3500}
+        ],
+        choices: [
+            {text: "Answer all their questions honestly", points: -10, outcome: "risky", nextScene: 4, chatResponse: "I go to Central High, usually home by 3pm, parents work late most days."},
+            {text: "Give vague answers and change the subject", points: 10, outcome: "safe", nextScene: 4, chatResponse: "I'd rather not share that. Want to talk about photography instead?"},
+            {text: "Ask them why they want to know", points: 8, outcome: "safe", nextScene: 4, chatResponse: "That's pretty personal... why do you need to know all that?"},
+            {text: "Stop responding entirely", points: 5, outcome: "neutral", nextScene: 4, chatResponse: null}
+        ],
+        outcomes: {
+            risky: {title: "🚨 AI-Enhanced Stalking!", text: "You just gave dangerous info to someone using AI to analyze your profile! Predators use AI to scrape public data, predict your patterns, and ask targeted questions. AI makes surveillance and stalking easier and more effective."},
+            safe: {title: "✅ Great Boundaries!", text: "You recognized AI-powered social engineering! Scammers use AI to analyze your posts, learn your habits, and craft personalized messages. The more they know, the more convincing their manipulation becomes."},
+            neutral: {title: "🤔 Ghosting Works", text: "When someone uses AI-scraped data to ask overly personal questions, stopping communication is the right choice."}
+        }
+    },
+    
+    4: {
+        id: 4,
+        title: "The Pressure Intensifies",
+        text: "Alex isn't taking no for an answer. They're getting more insistent, messaging repeatedly, and using guilt tactics to try to make you feel bad for not sharing personal information.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "Come on, I thought we were friends!", delay: 800},
+            {from: "alex", text: "You're being really paranoid...", delay: 1900},
+            {from: "alex", text: "I'm just trying to get to know you better. Why won't you trust me?", delay: 3200}
+        ],
+        hasMinigame: true,
+        minigame: {
+            type: "dodge",
+            title: "⚡ Catch the Truth!",
+            instructions: "Alex is bombarding you with pressure tactics! Use arrow keys ← → to move your basket and catch GREEN truths (healthy boundaries). Avoid RED manipulation (lies/pressure). Collect 8 truths while protecting your 3 lives!",
+            duration: 30,
+            requiredScore: 8,
+            lives: 3,
+            bonusPoints: 20
+        },
+        choices: [
+            {text: "Give in to the pressure and share your location", points: -10, outcome: "risky", nextScene: 5, chatResponse: "Okay fine, I live on Maple Street near the mall."},
+            {text: "Set firm boundaries and explain why", points: 12, outcome: "safe", nextScene: 6, chatResponse: "I don't share personal info with people I just met online. That's not being paranoid, that's being safe."},
+            {text: "Block them immediately without explanation", points: 10, outcome: "safe", nextScene: 7, chatResponse: null},
+            {text: "Ask a trusted adult for advice first", points: 15, outcome: "safe", nextScene: 8, chatResponse: null}
+        ],
+        outcomes: {
+            risky: {title: "🚨 Manipulation Success!", text: "Guilt is a manipulation tactic. You gave in to pressure and shared dangerous information. Predators use guilt to break down your boundaries."},
+            safe: {title: "✅ Boundaries Maintained!", text: "You recognized manipulation and stood firm. Explaining your reasoning educates them and shows confidence in your decision."}
+        }
+    },
+    
+    5: {
+        id: 5,
+        title: "The Trap Springs",
+        text: "After getting your location, Alex immediately escalates. They ask for photos, your exact address, and suggest meeting up 'right now' - all major red flags that this person has dangerous intentions.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "Perfect! I know that area!", delay: 900},
+            {from: "alex", text: "Send me some photos of yourself?", delay: 2100},
+            {from: "alex", text: "Actually, I'm nearby now. What's your exact address? Let's meet up!", delay: 3600}
+        ],
+        choices: [
+            {text: "Give them more information", points: -15, outcome: "risky", nextScene: 9, chatResponse: "Sure, I'm at 123 Maple St, apartment 4B."},
+            {text: "Realize the danger and block immediately", points: 10, outcome: "safe", nextScene: 10, chatResponse: null},
+            {text: "Tell them you're not comfortable and report them", points: 12, outcome: "safe", nextScene: 10, chatResponse: "This is making me very uncomfortable. I'm reporting you."}
+        ],
+        outcomes: {
+            risky: {title: "🚨 EXTREME DANGER!", text: "You gave your exact address to a stranger showing predatory behavior! In real life, this requires immediate action: tell trusted adults, alert authorities, change your routine. This is a stalking situation."},
+            safe: {title: "✅ Crisis Averted!", text: "You recognized the escalation and took action. Blocking and reporting are the correct responses when someone shows predatory behavior."}
+        }
+    },
+    
+    6: {
+        id: 6,
+        title: "Explaining Your Boundaries",
+        text: "You clearly explained why you won't share personal information. Alex responds with more manipulation, trying different tactics to wear down your defenses.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "Wow, that's really rude.", delay: 900},
+            {from: "alex", text: "I thought you were cool but I guess not.", delay: 2000},
+            {from: "alex", text: "Fine, forget I asked. 🙄", delay: 3200}
+        ],
+        choices: [
+            {text: "Apologize and reconsider", points: -10, outcome: "risky", nextScene: 5, chatResponse: "Sorry, maybe I was being too harsh..."},
+            {text: "Stand firm and block them", points: 15, outcome: "safe", nextScene: 10, chatResponse: null},
+            {text: "Explain one more time calmly", points: 8, outcome: "neutral", nextScene: 7, chatResponse: "I'm not trying to be rude. I'm just being careful online, which is smart."},
+            {text: "Screenshot everything and report", points: 15, outcome: "safe", nextScene: 10, chatResponse: null}
+        ],
+        outcomes: {
+            risky: {title: "🚨 Guilt Worked!", text: "They made you doubt yourself! This is manipulation - making YOU feel bad for protecting yourself. Never apologize for healthy boundaries."},
+            safe: {title: "✅ Firm Boundaries!", text: "When someone responds to boundaries with guilt-tripping, that confirms they had bad intentions. You did the right thing."},
+            neutral: {title: "🤔 Still Engaging", text: "You don't owe manipulators explanations. Sometimes it's better to block without further engagement."}
+        }
+    },
+    
+    7: {
+        id: 7,
+        title: "Continued Harassment",
+        text: "Even after you stopped responding, Alex creates new accounts and continues messaging. They're commenting on your posts, finding you on different platforms, and won't take no for an answer.",
+        hasChat: true,
+        chatSpeaker: "alex",
+        chatMessages: [
+            {from: "alex", text: "Why are you ignoring me?", delay: 800},
+            {from: "alex", text: "I made a new account since you blocked me.", delay: 1900},
+            {from: "alex", text: "You can't just ignore people. That's mean.", delay: 3100}
+        ],
+        choices: [
+            {text: "Engage and try to make them stop", points: -5, outcome: "risky", nextScene: 5, chatResponse: "I blocked you because you made me uncomfortable. Please leave me alone."},
+            {text: "Block all accounts and report for harassment", points: 15, outcome: "safe", nextScene: 10, chatResponse: null},
+            {text: "Tell a trusted adult and show them the messages", points: 15, outcome: "safe", nextScene: 8, chatResponse: null},
+            {text: "Document everything and contact authorities", points: 15, outcome: "safe", nextScene: 10, chatResponse: null}
+        ],
+        outcomes: {
+            risky: {title: "⚠️ Feeding the Behavior", text: "Engaging with harassers encourages them. ANY response - even negative - gives them what they want: your attention."},
+            safe: {title: "✅ Proper Response!", text: "Creating multiple accounts to contact someone who blocked you is serious harassment. Reporting and documenting is the correct response."}
+        }
+    },
+    
+    8: {
+        id: 8,
+        title: "Getting Help",
+        text: "You wisely decided to talk to a trusted adult about the situation. They help you understand this is serious harassment and take appropriate action to protect you.",
+        hasChat: false,
+        choices: [
+            {text: "Work with them to report and document everything", points: 15, outcome: "safe", nextScene: 10, chatResponse: null},
+            {text: "Follow their advice on blocking and privacy settings", points: 12, outcome: "safe", nextScene: 10, chatResponse: null},
+            {text: "Feel embarrassed and minimize what happened", points: 0, outcome: "neutral", nextScene: 10, chatResponse: null}
+        ],
+        outcomes: {
+            safe: {title: "✅ Asking for Help!", text: "Telling a trusted adult is the RIGHT decision when dealing with online harassment. You recognized when a situation was beyond your ability to handle alone."},
+            neutral: {title: "🤔 Don't Minimize", text: "What happened to you was serious. Never feel embarrassed about being targeted by a predator - it's not your fault."}
+        }
+    },
+    
+    9: {
+        id: 9,
+        title: "Dangerous Situation",
+        text: "You shared too much information with a stranger. This is now a dangerous real-world situation that requires immediate action from trusted adults and possibly authorities.",
+        hasChat: false,
+        isEnding: true,
+        choices: [
+            {text: "Tell parents/guardians immediately", points: 5, outcome: "safe", nextScene: null}
+        ],
+        outcomes: {
+            safe: {title: "⚠️ EMERGENCY RESPONSE NEEDED", text: "In real life: Tell trusted adults immediately, report to authorities with all evidence, change your routines, never go places alone, increase home security. You made dangerous mistakes, but taking immediate action now can help protect you."}
+        }
+    },
+    
+    10: {
+        id: 10,
+        title: "Safety Achieved",
+        text: "You successfully protected yourself from an online predator! Your awareness of red flags, strong boundaries, and quick action kept you safe. You also helped protect others by reporting the account.",
+        hasChat: false,
+        isEnding: true,
+        choices: [
+            {text: "Review what I learned", points: 10, outcome: "safe", nextScene: null}
+        ],
+        outcomes: {
+            safe: {title: "🎓 Digital Safety Expert!", text: "Congratulations! You demonstrated excellent online safety awareness, maintained firm boundaries under pressure, and protected both yourself and your community. These skills are essential for staying safe online."}
+        }
+    },
+    
+    11: {
+        id: 11,
+        title: "Investigating Alex's AI-Generated Content",
+        text: "Before going further, you check Alex's social media more carefully. Looking through their posts, you notice AI-generated photos and text that seem too perfect. Generative AI makes it easy for scammers to create vast amounts of convincing fake content.",
+        hasChat: false,
+        hasMinigame: true,
+        minigame: {
+            type: "socialfeed",
+            title: "📱 Spot the AI-Generated Fakes!",
+            instructions: "Click on the 3 posts that show signs of AI-generated content or manipulation!",
+            posts: [
+                {name: "Alex Chen", time: "2 hours ago", content: "Just back from Paris! The Eiffel Tower was breathtaking 📸✨", image: "🗼", tags: ["AI-generated travel photo", "New account with expensive trips"], isSuspicious: true},
+                {name: "Alex Chen", time: "1 day ago", content: "Morning coffee ☕", image: "☕", tags: [], isSuspicious: false},
+                {name: "Alex Chen", time: "3 days ago", content: "I'm passionate about connecting with amazing people in my area! Share your location so we can meet and create memories together!", image: "👥", tags: ["AI-written overly friendly text", "Asking for addresses"], isSuspicious: true},
+                {name: "Alex Chen", time: "5 days ago", content: "Beautiful sunset 🌅", image: "🌅", tags: [], isSuspicious: false},
+                {name: "Alex Chen", time: "1 week ago", content: "Explore my curated photography collection! Click here for an immersive visual experience: bit.ly/def-not-malware", image: "📸", tags: ["AI-generated marketing copy", "Suspicious shortened links"], isSuspicious: true},
+                {name: "Alex Chen", time: "1 week ago", content: "Park walk 🌳", image: "🌳", tags: [], isSuspicious: false}
+            ],
+            requiredCorrect: 3,
+            bonusPoints: 20
+        },
+        choices: [
+            {text: "Continue investigating", points: 0, outcome: "safe", nextScene: 12, chatResponse: null}
+        ],
+        outcomes: {
+            safe: {title: "🔍 AI Detection Skills!", text: "You identified AI-generated content! Scammers use AI to mass-produce fake posts, photos, and text that look realistic. AI makes it cheaper and faster to create fake accounts at scale - one person can now manage hundreds of convincing fake profiles."}
+        }
+    },
+    
+    12: {
+        id: 12,
+        title: "Friends' Warning About AI Deepfakes",
+        text: "Your friends create a group chat with urgent information. They discovered Alex is using AI-generated photos and might even attempt voice or video calls with deepfake technology. AI makes impersonation more convincing than ever.",
+        hasChat: false,
+        hasMinigame: true,
+        minigame: {
+            type: "groupchat",
+            title: "💬 AI Deepfake Warning!",
+            instructions: "Read the group chat about AI-powered deception, then answer the questions!",
+            messages: [
+                {from: "friend1", name: "Sarah", text: "Everyone! Did Alex add you too?", delay: 500},
+                {from: "friend2", name: "Mike", text: "Yes! Who is this person??", delay: 1200},
+                {from: "friend1", name: "Sarah", text: "I reverse-image searched their photos - they're AI-generated! I've NEVER met them!", delay: 2000},
+                {from: "you", name: "You", text: "What?! They said you were friends!", delay: 2800},
+                {from: "friend1", name: "Sarah", text: "LIES. They're using AI to create fake profiles. Could even use deepfake video calls!", delay: 3600},
+                {from: "friend2", name: "Mike", text: "They asked where I live and my schedule. Classic predator using AI tools.", delay: 4400},
+                {from: "alex", name: "Alex", text: "Hey everyone! Let's video chat soon! 😊", delay: 5200},
+                {from: "friend1", name: "Sarah", text: "DON'T video call! AI deepfakes can impersonate anyone. Block and report NOW.", delay: 6000}
+            ],
+            questions: [
+                {question: "What AI threat did Sarah discover?", options: [{text: "AI-generated profile photos", isCorrect: true}, {text: "Alex likes AI", isCorrect: false}, {text: "AI translation errors", isCorrect: false}, {text: "AI art posts", isCorrect: false}]},
+                {question: "Why is video calling risky here?", options: [{text: "AI deepfakes can fake video calls", isCorrect: true}, {text: "Bad internet connection", isCorrect: false}, {text: "Camera might break", isCorrect: false}, {text: "Too expensive", isCorrect: false}]},
+                {question: "What should you do?", options: [{text: "Block immediately - AI makes fakes convincing", isCorrect: true}, {text: "Video call to verify", isCorrect: false}, {text: "Ask more questions", isCorrect: false}, {text: "Ignore the warnings", isCorrect: false}]}
+            ],
+            bonusPoints: 25
+        },
+        choices: [
+            {text: "Block Alex and warn others about AI threats", points: 15, outcome: "safe", nextScene: 3, chatResponse: null}
+        ],
+        outcomes: {
+            safe: {title: "✅ AI Awareness Saves You!", text: "Your friends identified AI-generated content! Predators now use AI to create fake photos, videos, and even voice calls. Deepfake technology makes it possible to impersonate anyone - never trust video calls from strangers. Always verify through trusted channels first."}
+        }
+    },
+};
+
+// Chat Simulation
+function simulateChat(messages, container, speaker, callback) {
+    let messageIndex = 0;
+    function sendNext() {
+        if (messageIndex >= messages.length) {
+            if (callback) setTimeout(callback, 400);
+            return;
+        }
+        const msg = messages[messageIndex];
+        if (msg.from === "alex" || msg.from === "sarah") {
+            showTyping(container);
+            setTimeout(() => {
+                hideTyping(container);
+                addMessage(msg.from, msg.text, container);
+                messageIndex++;
+                sendNext();
+            }, msg.delay || 1000);
+        } else {
+            addMessage(msg.from, msg.text, container);
+            messageIndex++;
+            setTimeout(sendNext, 400);
+        }
+    }
+    sendNext();
+}
+
+function showTyping(container) {
+    const indicator = $("<div class='chat-message alex' id='typing-indicator'><div class='typing-indicator'><div class='typing-dot'></div><div class='typing-dot'></div><div class='typing-dot'></div></div></div>");
+    container.append(indicator);
+    container.scrollTop(container[0].scrollHeight);
+}
+
+function hideTyping(container) {
+    container.find("#typing-indicator").remove();
+}
+
+function addMessage(from, text, container) {
+    const msg = $("<div class='chat-message'></div>").addClass(from);
+    msg.append("<div class='message-bubble'>" + text + "</div>");
+    container.append(msg);
+    container.scrollTop(container[0].scrollHeight);
+}
+
+// MINIGAME 1: CLICK TO FIND
+function launchClickGame(minigame, onComplete) {
+    AudioManager.playClick();
+    const overlay = $("<div class='minigame-overlay active'></div>");
+    const container = $("<div class='minigame-container'></div>");
+    
+    container.append("<div class='minigame-title'>" + minigame.title + "</div>");
+    container.append("<div class='minigame-instructions'>" + minigame.instructions + "</div>");
+    
+    const grid = $("<div class='minigame-grid'></div>");
+    let correctClicks = 0;
+    const clickedItems = new Set();
+    const totalRedFlags = minigame.items.filter(i => i.isRedFlag).length;
+    
+    // SHUFFLE items so red flags aren't all at the top
+    const shuffledItems = minigame.items.slice().sort(() => Math.random() - 0.5);
+    
+    shuffledItems.forEach((item, index) => {
+        const itemDiv = $("<div class='minigame-item'></div>");
+        itemDiv.append("<div class='minigame-icon'>" + item.icon + "</div>");
+        itemDiv.append("<div class='minigame-label'>" + item.label + "</div>");
+        
+        itemDiv.on("click", function() {
+            if (clickedItems.has(index)) return;
+            clickedItems.add(index);
+            
+            if (item.isRedFlag) {
+                itemDiv.addClass("correct");
+                correctClicks++;
+                AudioManager.playCorrect();
+                $("#mg-score").text(correctClicks);
+                
+                if (correctClicks === totalRedFlags) {
+                    setTimeout(() => {
+                        minigamesCompleted.click = true;
+                        completeMinigame(true, minigame, container, onComplete);
+                    }, 300); // REDUCED from 600ms
+                }
+            } else {
+                itemDiv.addClass("wrong");
+                AudioManager.playWrong();
+                setTimeout(() => {
+                    itemDiv.removeClass("wrong");
+                    clickedItems.delete(index);
+                }, 500);
+            }
+        });
+        
+        grid.append(itemDiv);
+    });
+    
+    container.append(grid);
+    container.append("<div class='minigame-score'>Found: <span id='mg-score'>0</span>/" + totalRedFlags + " red flags</div>");
+    overlay.append(container);
+    $("body").append(overlay);
+}
+
+// MINIGAME 2: SEQUENCE MEMORY
+function launchSequenceGame(minigame, onComplete) {
+    AudioManager.playClick();
+    const overlay = $("<div class='minigame-overlay active'></div>");
+    const container = $("<div class='minigame-container'></div>");
+    
+    container.append("<div class='minigame-title'>" + minigame.title + "</div>");
+    container.append("<div class='minigame-instructions'>" + minigame.instructions + "</div>");
+    
+    const gameArea = $("<div class='sequence-game'></div>");
+    const display = $("<div class='sequence-display' id='seq-display'>Get ready...</div>");
+    const buttons = $("<div class='sequence-buttons'></div>");
+    
+    const symbols = ["⚠️", "🚫", "🔒", "👁️"];
+    symbols.forEach((symbol, idx) => {
+        const btn = $("<button class='sequence-btn' data-idx='" + idx + "'>" + symbol + "</button>");
+        buttons.append(btn);
+    });
+    
+    gameArea.append(display, buttons);
+    container.append(gameArea);
+    overlay.append(container);
+    $("body").append(overlay);
+    
+    let sequence = [];
+    let playerSequence = [];
+    let roundsWon = 0;
+    let isPlaying = false;
+    
+    function playSequence() {
+        isPlaying = true;
+        sequence.push(Math.floor(Math.random() * 4));
+        $("#seq-display").html("Round " + (roundsWon + 1) + " - Watch the pattern!");
+        playerSequence = [];
+        
+        let delay = 0;
+        sequence.forEach((idx) => {
+            setTimeout(() => {
+                $(".sequence-btn[data-idx='" + idx + "']").addClass("flash");
+                AudioManager.playClick();
+                setTimeout(() => {
+                    $(".sequence-btn[data-idx='" + idx + "']").removeClass("flash");
+                }, 500);
+            }, delay);
+            delay += 900;
+        });
+        
+        setTimeout(() => {
+            isPlaying = false;
+            $("#seq-display").html("Your turn! Click the pattern in order.");
+        }, delay + 600);
+    }
+    
+    $(".sequence-btn").on("click", function() {
+        if (isPlaying) return;
+        
+        const idx = parseInt($(this).data("idx"));
+        playerSequence.push(idx);
+        AudioManager.playClick();
+        
+        const currentStep = playerSequence.length - 1;
+        if (playerSequence[currentStep] !== sequence[currentStep]) {
+            $(".sequence-btn").addClass("wrong");
+            AudioManager.playWrong();
+            setTimeout(() => {
+                $(".sequence-btn").removeClass("wrong");
+                $("#seq-display").html("Wrong! Starting over from round 1...");
+                sequence = [];
+                roundsWon = 0;
+                setTimeout(() => playSequence(), 2000);
+            }, 800);
+            return;
+        }
+        
+        if (playerSequence.length === sequence.length) {
+            roundsWon++;
+            AudioManager.playCorrect();
+            
+            if (roundsWon >= minigame.roundsRequired) {
+                setTimeout(() => {
+                    minigamesCompleted.sequence = true;
+                    completeMinigame(true, minigame, container, onComplete);
+                }, 700);
+            } else {
+                $("#seq-display").html("Correct! Round " + (roundsWon + 1) + " coming up...");
+                setTimeout(() => playSequence(), 2000);
+            }
+        }
+    });
+    
+    setTimeout(() => playSequence(), 1500);
+}
+
+// MINIGAME 3: DODGE GAME (BASKET VERSION - Catch falling objects)
+function launchDodgeGame(minigame, onComplete) {
+    AudioManager.playClick();
+    const overlay = $("<div class='minigame-overlay active'></div>");
+    const container = $("<div class='minigame-container'></div>");
+    
+    container.append("<div class='minigame-title'>" + minigame.title + "</div>");
+    container.append("<div class='minigame-instructions'>" + minigame.instructions.replace('dodge', 'catch').replace('Dodge', 'Catch') + "</div>");
+    
+    const gameArea = $("<div class='dodge-game'></div>");
+    const basket = $("<div class='dodge-player'>🧺</div>"); // BASKET EMOJI
+    
+    // Hearts display
+    const heartsHtml = "<div class='dodge-lives'>" +
+        "<span class='heart' id='heart-1'>❤️</span>" +
+        "<span class='heart' id='heart-2'>❤️</span>" +
+        "<span class='heart' id='heart-3'>❤️</span>" +
+        "</div>";
+    
+    const hud = $("<div class='dodge-hud'>" + heartsHtml + "<div>Truths: <span id='dodge-score'>0</span></div><div>Time: <span id='dodge-time'>" + minigame.duration + "</span></div></div>");
+    
+    gameArea.append(hud, basket);
+    container.append(gameArea);
+    overlay.append(container);
+    $("body").append(overlay);
+    
+    let basketX = 50;
+    let dodgeScore = 0;
+    let timeLeft = minigame.duration;
+    let lives = minigame.lives;
+    let gameActive = true;
+    let fallingObjects = [];
+    let keysPressed = {};
+    
+    // Smooth continuous movement with keyboard
+    $(document).on('keydown.dodge', function(e) {
+        if (!gameActive) return;
+        e.preventDefault();
+        keysPressed[e.keyCode] = true;
+    });
+    
+    $(document).on('keyup.dodge', function(e) {
+        keysPressed[e.keyCode] = false;
+    });
+    
+    // Continuous movement loop for smooth control
+    const moveInterval = setInterval(() => {
+        if (!gameActive) return;
+        
+        if (keysPressed[37]) { // Left arrow
+            basketX = Math.max(0, basketX - 2);
+            basket.css('left', basketX + '%');
+        }
+        if (keysPressed[39]) { // Right arrow
+            basketX = Math.min(90, basketX + 2);
+            basket.css('left', basketX + '%');
+        }
+    }, 16); // ~60fps
+    
+    // Spawn objects - EQUAL MIX (50% green, 50% red)
+    const spawnInterval = setInterval(() => {
+        if (!gameActive) return;
+        const isSafe = Math.random() > 0.5; // 50% chance each
+        const obj = $("<div class='" + (isSafe ? "dodge-safe-info" : "dodge-threat") + "'></div>");
+        const leftPos = Math.random() * 90;
+        const fallSpeed = 2500 + Math.random() * 1500;
+        
+        obj.css({
+            left: leftPos + '%',
+            top: '-50px'
+        });
+        obj.data('caught', false); // Mark as not caught yet
+        
+        gameArea.append(obj);
+        fallingObjects.push(obj);
+        
+        // Animate falling
+        obj.animate({top: '450px'}, fallSpeed, 'linear', function() {
+            obj.remove();
+            const index = fallingObjects.indexOf(obj);
+            if (index > -1) fallingObjects.splice(index, 1);
+        });
+    }, 1000);
+    
+    // INSTANT collision detection - catches objects as soon as they touch basket
+    const checkInterval = setInterval(() => {
+        if (!gameActive) return;
+        
+        const basketPos = basket.position();
+        const basketLeft = basketPos.left;
+        const basketRight = basketLeft + 80; // basket width
+        const basketTop = basketPos.top;
+        const basketBottom = basketTop + 60; // basket height
+        
+        fallingObjects.forEach(obj => {
+            if (!obj || !obj.position || obj.data('caught')) return;
+            
+            const objPos = obj.position();
+            const objLeft = objPos.left;
+            const objRight = objLeft + (obj.hasClass('dodge-safe-info') ? 30 : 35);
+            const objTop = objPos.top;
+            const objBottom = objTop + (obj.hasClass('dodge-safe-info') ? 30 : 35);
+            
+            // Check if object overlaps with basket (INSTANT detection)
+            if (objRight > basketLeft && objLeft < basketRight && 
+                objBottom > basketTop && objTop < basketBottom) {
+                
+                obj.data('caught', true); // Mark as caught to prevent double-counting
+                
+                if (obj.hasClass('dodge-safe-info')) {
+                    // GREEN BALL - Add point instantly
+                    dodgeScore++;
+                    $('#dodge-score').text(dodgeScore);
+                    AudioManager.playCorrect();
+                    obj.stop().fadeOut(200, function() {
+                        obj.remove();
+                        const index = fallingObjects.indexOf(obj);
+                        if (index > -1) fallingObjects.splice(index, 1);
+                    });
+                    
+                    if (dodgeScore >= minigame.requiredScore) {
+                        endDodgeGame(true);
+                    }
+                } else if (obj.hasClass('dodge-threat')) {
+                    // RED BOX - Lose life instantly
+                    lives--;
+                    // FIXED: Hearts disappear left to right
+                    // lives=2 (lost 1) → lose heart-1 (leftmost)
+                    // lives=1 (lost 2) → lose heart-2 (middle)
+                    // lives=0 (lost 3) → lose heart-3 (rightmost)
+                    const heartToLose = 3 - lives;
+                    $('#heart-' + heartToLose).addClass('lost');
+                    AudioManager.playWrong();
+                    obj.stop().fadeOut(200, function() {
+                        obj.remove();
+                        const index = fallingObjects.indexOf(obj);
+                        if (index > -1) fallingObjects.splice(index, 1);
+                    });
+                    
+                    if (lives <= 0) {
+                        endDodgeGame(false);
+                    }
+                }
+            }
+        });
+    }, 16); // Check every frame (~60fps) for instant response
+    
+    // Timer
+    const timerInterval = setInterval(() => {
+        if (!gameActive) return;
+        timeLeft--;
+        $('#dodge-time').text(timeLeft);
+        if (timeLeft <= 0) {
+            endDodgeGame(dodgeScore >= minigame.requiredScore);
+        }
+    }, 1000);
+    
+    function endDodgeGame(success) {
+        gameActive = false;
+        clearInterval(spawnInterval);
+        clearInterval(checkInterval);
+        clearInterval(timerInterval);
+        clearInterval(moveInterval);
+        $(document).off('keydown.dodge');
+        $(document).off('keyup.dodge');
+        keysPressed = {};
+        
+        // Clean up all falling objects
+        fallingObjects.forEach(obj => obj.stop().remove());
+        fallingObjects = [];
+        
+        if (success) {
+            minigamesCompleted.dodge = true;
+        }
+        
+        completeMinigame(success, minigame, container, onComplete);
+    }
+}
+
+// Complete minigame
+function completeMinigame(success, minigame, container, callback) {
+    if (success) {
+        AudioManager.playSuccess();
+        score += minigame.bonusPoints;
+        safeChoices++;
+    }
+    
+    const resultDiv = $("<div class='minigame-score " + (success ? "success" : "") + "'></div>");
+    resultDiv.html("<div style='font-size: 40px; margin-bottom: 15px;'>" + (success ? "🎉 ✨ 🏆" : "😅 Try Again!") + "</div><div style='font-size: 20px; font-weight: bold; margin-bottom: 10px;'>" + (success ? "Challenge Complete!" : "You can do it!") + "</div><div>" + (success ? "+" + minigame.bonusPoints + " bonus points!" : "Keep trying to pass this challenge.") + "</div>");
+    
+    const btn = $("<button class='minigame-btn'>" + (success ? "Continue →" : "Retry Challenge") + "</button>");
+    btn.on("click", function() {
+        AudioManager.playClick();
+        if (success) {
+            $(".minigame-overlay").remove();
+            if (callback) callback();
+        } else {
+            $(".minigame-overlay").remove();
+            if (minigame.type === "click") launchClickGame(minigame, callback);
+            else if (minigame.type === "sequence") launchSequenceGame(minigame, callback);
+            else if (minigame.type === "dodge") launchDodgeGame(minigame, callback);
+        }
+    });
+    
+    resultDiv.append(btn);
+    container.find(".minigame-grid, .minigame-score, .dodge-game, .sequence-game, .social-feed-game, .group-chat-game, .feed-counter").remove();
+    container.append(resultDiv);
+    container.scrollTop(0);
+}
+
+// Game Core
+$(document).ready(function() {
+    loadAchievements();
+    
+    // Initialize audio IMMEDIATELY on page load
+    AudioManager.init();
+    BGM.init();
+    
+    $(document).on("click", ".btn", function() {
+        // Resume audio context on first user interaction (browser requirement)
+        if (AudioManager.context && AudioManager.context.state === 'suspended') {
+            AudioManager.context.resume();
+        }
+        if (BGM.context && BGM.context.state === 'suspended') {
+            BGM.context.resume();
+        }
+        
+        AudioManager.playClick();
+        if (stage === "welcome") {
+            BGM.start();
+            startGame();
+        }
+    });
+    
+    $(document).on("click", ".choice-btn, .chat-response-btn", function() {
+        AudioManager.playClick();
+        handleChoice($(this).data("choice"));
+    });
+    
+    $(document).on("click", ".continue-btn", function() {
+        AudioManager.playClick();
+        nextScene();
+    });
+});
+
+function startGame() {
+    $("#welcome").fadeOut(500);
+    $("#screen").fadeIn(500);
+    stage = "playing";
+    score = 0;
+    safeChoices = 0;
+    riskyChoices = 0;
+    trustLevel = 100;
+    currentStreak = 0;
+    bestStreak = 0;
+    visitedScenes = [];
+    totalDecisions = 0;
+    minigamesCompleted = {click: false, dodge: false, sequence: false};
+    loadScene(1);
+}
+
+function loadScene(sceneId) {
+    const scene = sceneGraph[sceneId];
+    if (!scene) {
+        showResults();
+        return;
+    }
+    
+    currentScene = sceneId;
+    visitedScenes.push(sceneId);
+    
+    const progress = (visitedScenes.length / 10) * 100;
+    $("#progress-bar-fill").css("width", progress + "%");
+    $("#progress-text").html("Scene " + visitedScenes.length);
+    
+    let html = "<h2 class='scene-title'>" + scene.title + "</h2><p class='scene-text'>" + scene.text + "</p>";
+    
+    $("#story-content").html(html).scrollTop(0);
+    updateTrustMeter();
+    
+    if (currentStreak >= 2) {
+        $("#streak-display").addClass("active").html("🔥 " + currentStreak);
+    } else {
+        $("#streak-display").removeClass("active");
+    }
+    
+    if (scene.hasChat && scene.chatMessages) {
+        const chatContainer = $("<div class='chat-container'></div>");
+        const speaker = scene.chatSpeaker || "alex";
+        const speakerName = speaker === "sarah" ? "Sarah" : "Alex Chen";
+        const avatarClass = speaker === "sarah" ? "chat-avatar sarah" : "chat-avatar";
+        
+        const header = $("<div class='chat-header'><div class='" + avatarClass + "'>👤</div><div class='chat-info'><div class='chat-name'>" + speakerName + "</div><div class='chat-status'>● Active</div></div></div>");
+        const messages = $("<div class='chat-messages'></div>");
+        chatContainer.append(header, messages);
+        $("#story-content").append(chatContainer);
+        
+        simulateChat(scene.chatMessages, messages, speaker, function() {
+            if (scene.hasMinigame) {
+                // LONGER PAUSE before first minigame (3 seconds)
+                setTimeout(() => {
+                    launchMinigameByType(scene.minigame, () => showChoices(scene));
+                }, 3000);
+            } else {
+                showChoices(scene);
+            }
+        });
+    } else {
+        if (scene.hasMinigame) {
+            // Check if we should show choices before minigame
+            if (scene.minigame.showBeforeGame) {
+                showChoices(scene);
+            } else {
+                // JUMP STRAIGHT INTO MINIGAME (no chat to read)
+                launchMinigameByType(scene.minigame, () => showChoices(scene));
+            }
+        } else {
+            showChoices(scene);
+        }
+    }
+}
+
+function launchMinigameByType(minigame, callback) {
+    if (minigame.type === "click") launchClickGame(minigame, callback);
+    else if (minigame.type === "sequence") launchSequenceGame(minigame, callback);
+    else if (minigame.type === "socialfeed") launchSocialFeedGame(minigame, callback);
+    else if (minigame.type === "groupchat") launchGroupChatGame(minigame, callback);
+    else if (minigame.type === "dodge") launchDodgeGame(minigame, callback);
+}
+
+function showChoices(scene) {
+    if (scene.hasChat) {
+        const responses = $("<div class='chat-responses'></div>");
+        scene.choices.forEach((choice, index) => {
+            const btn = $("<button class='chat-response-btn' data-choice='" + index + "'><span class='response-icon'>" + (choice.chatResponse ? "💬" : "🚫") + "</span><span>" + choice.text + "</span></button>");
+            responses.append(btn);
+        });
+        $(".chat-container").append(responses);
+    } else {
+        const choicesDiv = $("<div class='choices'></div>");
+        scene.choices.forEach((choice, index) => {
+            const btn = $("<button class='choice-btn' data-choice='" + index + "'><span class='choice-icon'>➤</span><span>" + choice.text + "</span></button>");
+            choicesDiv.append(btn);
+        });
+        $("#story-content").append(choicesDiv);
+    }
+}
+
+function handleChoice(index) {
+    const scene = sceneGraph[currentScene];
+    const choice = scene.choices[index];
+    const outcome = scene.outcomes[choice.outcome];
+    
+    // Special handling for scene 2 - launch minigame before showing outcome
+    if (scene.id === 2 && scene.hasMinigame) {
+        $(".choices, .chat-responses").fadeOut(200, function() {
+            launchMinigameByType(scene.minigame, () => {
+                // After minigame, continue with normal choice handling
+                processChoice(scene, choice, outcome);
+            });
+        });
+        return;
+    }
+    
+    // Normal choice processing
+    processChoice(scene, choice, outcome);
+}
+
+function processChoice(scene, choice, outcome) {
+    totalDecisions++;
+    score += choice.points;
+    
+    if (choice.outcome === "safe") {
+        safeChoices++;
+        currentStreak++;
+        if (currentStreak > bestStreak) bestStreak = currentStreak;
+        AudioManager.playSafe();
+    } else if (choice.outcome === "risky") {
+        riskyChoices++;
+        currentStreak = 0;
+        AudioManager.playRisky();
+    } else {
+        // Neutral - no streak change, no sound
+        currentStreak = 0;
+    }
+    
+    if (choice.outcome === "safe") {
+        trustLevel = Math.min(100, trustLevel + 5);
+    } else if (choice.outcome === "risky") {
+        trustLevel = Math.max(0, trustLevel - 35);  // INCREASED: 3 bad choices = game over
+    }
+    // NO CHANGE for neutral outcome
+    
+    updateTrustMeter();
+    
+    if (trustLevel <= 0) {
+        showGameOver();
+        return;
+    }
+    
+    if (currentStreak >= 2) {
+        $("#streak-display").addClass("active").html("🔥 " + currentStreak);
+    } else {
+        $("#streak-display").removeClass("active");
+    }
+    
+    if (choice.chatResponse) {
+        addMessage("player", choice.chatResponse, $(".chat-messages"));
+    }
+    
+    let emoji = choice.outcome === "safe" ? "🎉 😊 ✨" : (choice.outcome === "risky" ? "😰 ⚠️ 😱" : "🤔 💭 📚");
+    
+    $(".choices, .chat-responses").fadeOut(300, function() {
+        let html = "<div style='font-size: 40px; text-align: center; margin: 20px 0;'>" + emoji + "</div>";
+        html += "<div class='outcome-box " + (choice.outcome === "safe" ? "safe" : "") + "'>";
+        html += "<div class='outcome-title'>" + outcome.title + "</div>";
+        html += "<div class='outcome-text'>" + outcome.text + "</div></div>";
+        
+        const nextId = choice.nextScene;
+        if (scene.isEnding || !nextId) {
+            html += "<button class='continue-btn' onclick='showResults()'>View Results →</button>";
+        } else {
+            html += "<button class='continue-btn' data-next='" + nextId + "'>Continue →</button>";
+        }
+        
+        $(this).html(html).fadeIn(300);
+    });
+}
+
+function nextScene() {
+    const nextId = parseInt($(".continue-btn").data("next"));
+    if (nextId) {
+        $("#story-content").fadeOut(300, function() {
+            loadScene(nextId);
+            $(this).fadeIn(300);
+        });
+    } else {
+        showResults();
+    }
+}
+
+function updateTrustMeter() {
+    $("#trust-bar").css("width", trustLevel + "%");
+    
+    // Add pulse animation when meter changes
+    $("#trust-meter").addClass("pulse");
+    setTimeout(() => $("#trust-meter").removeClass("pulse"), 300);
+    
+    if (trustLevel >= 70) {
+        $("#trust-bar").removeClass("danger warning");
+        $("#trust-status").html("🛡️ Safe (" + trustLevel + "%)").css("color", "#6bff8c");
+    } else if (trustLevel >= 40) {
+        $("#trust-bar").removeClass("danger").addClass("warning");
+        $("#trust-status").html("⚠️ Careful (" + trustLevel + "%)").css("color", "#ffd93d");
+    } else {
+        $("#trust-bar").removeClass("warning").addClass("danger");
+        $("#trust-status").html("🚨 Risk (" + trustLevel + "%)").css("color", "#ff6b6b");
+    }
+}
+
+function showGameOver() {
+    BGM.stop();
+    AudioManager.playGameOver();
+    const html = "<div class='game-over-overlay'><div class='game-over-content'><div style='font-size: 80px;'>💀 🚨</div><h2>GAME OVER</h2><p>Your safety level dropped to zero.</p><p><strong>Scenes: " + visitedScenes.length + " | Safe Choices: " + safeChoices + "</strong></p><button class='btn' onclick='location.reload()'>Try Again</button></div></div>";
+    $("body").append(html);
+}
+
+function showResults() {
+    BGM.stop();
+    AudioManager.playSuccess();
+    $("#screen").fadeOut(500, function() {
+        let badge, title, emoji, msg;
+        
+        if (safeChoices >= 8) {
+            title = "Safety Master!";
+            emoji = "🛡️";
+            badge = "🛡️ Digital Safety Master";
+            msg = "Outstanding! You navigated every challenge with wisdom and made consistently safe choices!";
+        } else if (safeChoices >= 5) {
+            title = "Safety Expert!";
+            emoji = "🏆";
+            badge = "🏆 Online Safety Expert";
+            msg = "Excellent work! You demonstrated strong awareness and completed all safety challenges!";
+        } else if (safeChoices >= 3) {
+            title = "Good Awareness";
+            emoji = "👍";
+            badge = "👍 Good Safety Awareness";
+            msg = "Good job! You completed the challenges and made mostly safe choices.";
+        } else {
+            title = "Learning Journey";
+            emoji = "📚";
+            badge = "📚 Safety Learner";
+            msg = "You completed the experience! Review the lessons to improve your online safety skills.";
+        }
+        
+        saveAchievement(badge);
+        
+        let html = "<div style='font-size: 50px; margin: 20px;'>🎉 🏆 ✨</div>";
+        html += "<h2>" + emoji + " " + title + "</h2>";
+        html += "<div class='final-score'>" + safeChoices + " Safe Choices</div>";
+        html += "<p style='font-size: 18px; margin: 20px; color: #b8c5d6;'>" + msg + "</p>";
+        
+        html += "<div style='margin: 20px; padding: 15px; background: rgba(83, 223, 221, 0.1); border-radius: 15px;'>";
+        html += "<strong>🎮 Minigames Completed:</strong><br>";
+        html += (minigamesCompleted.click ? "✅" : "❌") + " Red Flags Detection<br>";
+        html += (minigamesCompleted.sequence ? "✅" : "❌") + " Memory Challenge<br>";
+        html += (minigamesCompleted.socialfeed ? "✅" : "❌") + " Social Media Analysis<br>";
+        html += (minigamesCompleted.groupchat ? "✅" : "❌") + " Group Chat Warning<br>";
+        html += (minigamesCompleted.dodge ? "✅" : "❌") + " Dodge the Manipulation";
+        html += "</div>";
+        
+        html += "<div class='lesson-box' style='background: rgba(255, 107, 107, 0.1); border: 2px solid #ff6b6b; padding: 20px; margin: 20px auto; max-width: 700px; border-radius: 15px; text-align: left;'>";
+        html += "<h4 style='color: #ff6b6b; margin-bottom: 15px;'>🤖 How Gen AI Makes These Threats Worse:</h4>";
+        html += "<ul style='list-style: none; padding: 0;'>";
+        html += "<li style='margin: 10px 0;'>🎭 <strong>AI-Generated Fakes:</strong> Realistic photos, videos & voices in seconds</li>";
+        html += "<li style='margin: 10px 0;'>📊 <strong>Mass Scale:</strong> One person can manage 100s of convincing fake accounts</li>";
+        html += "<li style='margin: 10px 0;'>🎯 <strong>Personalization:</strong> AI scrapes your data to craft targeted manipulation</li>";
+        html += "<li style='margin: 10px 0;'>🎬 <strong>Deepfakes:</strong> Video calls can be faked - never trust video from strangers</li>";
+        html += "<li style='margin: 10px 0;'>⚡ <strong>Speed:</strong> AI creates convincing content instantly, no manual effort</li>";
+        html += "<li style='margin: 10px 0;'>🔍 <strong>Protection:</strong> Verify accounts, check for AI-generated content, trust your network</li>";
+        html += "</ul>";
+        html += "</div>";
+        
+        if (bestStreak >= 2) {
+            html += "<div style='margin: 20px; padding: 15px; background: rgba(255, 217, 61, 0.2); border-radius: 15px; border: 2px solid #ffd93d;'>🔥 Best Streak: " + bestStreak + " safe choices in a row!</div>";
+        }
+        
+        html += "<button class='btn' onclick='location.reload()'>Play Again</button>";
+        
+        $("#results").html(html).fadeIn(500);
+    });
+}
+
+
+// MINIGAME 4: SOCIAL MEDIA FEED
+function launchSocialFeedGame(minigame, onComplete) {
+    AudioManager.playClick();
+    const overlay = $("<div class='minigame-overlay active'></div>");
+    const container = $("<div class='minigame-container'></div>");
+    container.append("<div class='minigame-title'>" + minigame.title + "</div>");
+    container.append("<div class='minigame-instructions'>" + minigame.instructions + "</div>");
+    const feedContainer = $("<div class='social-feed-game'></div>");
+    let flaggedCount = 0;
+    const flaggedPosts = new Set();
+    minigame.posts.forEach((post, index) => {
+        const postDiv = $("<div class='feed-post'></div>");
+        postDiv.append("<div class='feed-post-header'><div style='font-weight:bold'>" + post.name + "</div><div style='font-size:12px;color:#b8c5d6'>" + post.time + "</div></div>");
+        postDiv.append("<div class='feed-post-content'>" + post.content + "</div>");
+        postDiv.append("<div class='feed-post-image'>" + post.image + "</div>");
+        const tagsDiv = $("<div class='feed-post-tags' style='display:none'></div>");
+        if (post.tags.length > 0) {
+            post.tags.forEach(tag => tagsDiv.append("<span class='feed-tag'>" + tag + "</span>"));
+        }
+        postDiv.append(tagsDiv);
+        postDiv.on("click", function() {
+            if (flaggedPosts.has(index)) return;
+            if (post.isSuspicious) {
+                flaggedPosts.add(index);
+                postDiv.addClass("flagged");
+                postDiv.find(".feed-post-tags").show();
+                flaggedCount++;
+                AudioManager.playCorrect();
+                $("#feed-counter").text("Flagged: " + flaggedCount + "/" + minigame.requiredCorrect);
+                if (flaggedCount === minigame.requiredCorrect) {
+                    setTimeout(() => {
+                        minigamesCompleted.socialfeed = true;
+                        completeMinigame(true, minigame, container, onComplete);
+                    }, 500);
+                }
+            } else {
+                postDiv.addClass("wrong");
+                AudioManager.playWrong();
+                setTimeout(() => postDiv.removeClass("wrong"), 500);
+            }
+        });
+        feedContainer.append(postDiv);
+    });
+    container.append(feedContainer);
+    container.append("<div class='feed-counter' id='feed-counter'>Flagged: 0/" + minigame.requiredCorrect + "</div>");
+    overlay.append(container);
+    $("body").append(overlay);
+}
+
+// MINIGAME 5: GROUP CHAT
+function launchGroupChatGame(minigame, onComplete) {
+    AudioManager.playClick();
+    const overlay = $("<div class='minigame-overlay active'></div>");
+    const container = $("<div class='minigame-container'></div>");
+    container.append("<div class='minigame-title'>" + minigame.title + "</div>");
+    container.append("<div class='minigame-instructions'>" + minigame.instructions + "</div>");
+    const chatGame = $("<div class='group-chat-game'></div>");
+    const header = $("<div class='group-chat-header'>Friend Group Chat 💬</div>");
+    const messagesDiv = $("<div class='group-chat-messages'></div>");
+    chatGame.append(header, messagesDiv);
+    container.append(chatGame);
+    let messageIndex = 0;
+    function showNextMessage() {
+        if (messageIndex >= minigame.messages.length) {
+            setTimeout(() => showQuestions(), 1000);
+            return;
+        }
+        const msg = minigame.messages[messageIndex];
+        const messageDiv = $("<div class='group-message'></div>");
+        messageDiv.append("<div class='group-message-name'>" + msg.name + "</div>");
+        messageDiv.append("<div class='group-message-text'>" + msg.text + "</div>");
+        messagesDiv.append(messageDiv);
+        messagesDiv.scrollTop(messagesDiv[0].scrollHeight);
+        messageIndex++;
+        setTimeout(showNextMessage, msg.delay);
+    }
+    let currentQuestion = 0;
+    let correctAnswers = 0;
+    function showQuestions() {
+        if (currentQuestion >= minigame.questions.length) {
+            if (correctAnswers === minigame.questions.length) {
+                minigamesCompleted.groupchat = true;
+                completeMinigame(true, minigame, container, onComplete);
+            } else {
+                const resultDiv = $("<div class='minigame-score'></div>");
+                resultDiv.html("<div>Try again! " + correctAnswers + "/" + minigame.questions.length + "</div>");
+                const btn = $("<button class='minigame-btn'>Retry</button>");
+                btn.on("click", function() {
+                    $(".minigame-overlay").remove();
+                    launchGroupChatGame(minigame, onComplete);
+                });
+                resultDiv.append(btn);
+                chatGame.remove();
+                container.append(resultDiv);
+            }
+            return;
+        }
+        const question = minigame.questions[currentQuestion];
+        const questionDiv = $("<div class='group-chat-question'></div>");
+        questionDiv.append("<div style='font-weight:bold;margin-bottom:15px'>Q" + (currentQuestion + 1) + ": " + question.question + "</div>");
+        const optionsDiv = $("<div class='group-chat-options'></div>");
+        question.options.forEach((option) => {
+            const optionDiv = $("<div class='group-chat-option'>" + option.text + "</div>");
+            optionDiv.on("click", function() {
+                if (option.isCorrect) {
+                    optionDiv.addClass("correct");
+                    AudioManager.playCorrect();
+                    correctAnswers++;
+                    setTimeout(() => {
+                        questionDiv.remove();
+                        currentQuestion++;
+                        showQuestions();
+                    }, 800);
+                } else {
+                    optionDiv.addClass("wrong");
+                    AudioManager.playWrong();
+                    setTimeout(() => optionDiv.removeClass("wrong"), 500);
+                }
+            });
+            optionsDiv.append(optionDiv);
+        });
+        questionDiv.append(optionsDiv);
+        chatGame.append(questionDiv);
+    }
+    overlay.append(container);
+    $("body").append(overlay);
+    setTimeout(() => showNextMessage(), 500);
+}
+</script>
+</head>
+<body>
+<div id="container">
+    <div id="welcome">
+        <div class="character hero">🦸</div>
+        <div class="character villain">😈</div>
+        <h1>DIGITAL MIRROR</h1>
+        <p>An Interactive Journey Through Online Safety</p>
+        <p style="max-width: 600px;">
+            Navigate realistic scenarios involving online strangers, AI-generated content, and manipulation. Test your awareness through interactive challenges. Your choices determine your safety.
+        </p>
+        
+        <div style="background: rgba(83, 223, 221, 0.1); border: 2px solid #53dfdd; padding: 15px 25px; border-radius: 15px; margin: 20px 0; max-width: 500px;">
+            <strong>🔊 Please turn on your volume for the best experience!</strong>
+        </div>
+        
+        <div id="previous-achievements" style="display: none;">
+            <h3>🏆 Your Achievements</h3>
+            <div id="achievement-list"></div>
+        </div>
+        
+        <button class="btn">Begin Journey</button>
+        <div class="warning">
+            ⚠️ This covers online grooming, impersonation, and manipulation tactics
+        </div>
+    </div>
+    
+    <div id="screen">
+        <div id="progress-bar">
+            <div id="progress-bar-label">📊 Progress</div>
+            <div id="progress-bar-container">
+                <div id="progress-bar-fill"></div>
+            </div>
+            <div id="progress-text">Scene 0</div>
+        </div>
+        
+        <div id="trust-meter">
+            <div class="label">🛡️ Safety</div>
+            <div class="bar-container">
+                <div class="bar-fill" id="trust-bar"></div>
+            </div>
+            <div class="status-text" id="trust-status">Safe</div>
+        </div>
+        
+        <div id="streak-display">🔥 0</div>
+        
+        <div id="story-content"></div>
+    </div>
+    
+    <div id="results"></div>
+</div>
+</body>
+</html>
